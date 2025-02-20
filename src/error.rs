@@ -15,6 +15,8 @@ pub enum ClientError {
     CastError(String),
     #[error(transparent)]
     GenericError(#[from] Box<dyn std::error::Error + Send + Sync>),
+    #[error("Unsupported authentication mechanism. Needed '{0}', availables {1:?}")]
+    UnsupportedAuthMechanism(String, Vec<String>),
     #[error("Client already closed")]
     AlreadyClosed,
     #[error("Connection closed")]

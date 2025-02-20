@@ -76,13 +76,16 @@ use self::{
 
 mod channel;
 mod codec;
+mod connection;
 mod dispatcher;
 mod handler;
 mod message;
-mod metadata;
+pub mod metadata;
 mod metrics;
 mod options;
 mod task;
+
+pub use connection::*;
 
 #[cfg_attr(docsrs, doc(cfg(feature = "tokio-stream")))]
 #[pin_project(project = StreamProj)]
@@ -528,6 +531,7 @@ impl Client {
 
         Ok((tx, rx))
     }
+
     async fn initialize<T>(&mut self, receiver: ChannelReceiver<T>) -> Result<(), ClientError>
     where
         T: Stream<Item = Result<Response, ClientError>> + Unpin + Send,

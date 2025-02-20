@@ -1,8 +1,10 @@
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+use crate::client::{metadata, Connection};
 use crate::types::OffsetSpecification;
 use crate::{client::TlsConfiguration, producer::NoDedup};
+use rabbitmq_stream_protocol::commands::metadata::{MetadataCommand, MetadataResponse};
 use rand::prelude::SliceRandom;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
@@ -81,15 +83,20 @@ impl Environment {
         self,
         stream: &str,
         client_provided_name: String,
-    ) -> Result<Client, ProducerCreateError> {
+    ) -> Result<Arc<Connection>, ProducerCreateError> {
         let mut opt_with_client_provided_name = self.options.client_options.clone();
         opt_with_client_provided_name.client_provided_name = client_provided_name.clone();
 
-        let mut client = self
-            .create_client_with_options(opt_with_client_provided_name.clone())
-            .await?;
+        let mut client = Connection::connect(opt_with_client_provided_name.clone()).await?;
 
-        if let Some(metadata) = client.metadata(vec![stream.to_string()]).await?.get(stream) {
+        let response: MetadataResponse = client
+            .send_and_receive(|correlation_id| {
+                MetadataCommand::new(correlation_id, vec![stream.to_string()])
+            })
+            .await?;
+        let metadata = metadata::from_response(response);
+
+        if let Some(metadata) = metadata.get(stream) {
             tracing::debug!(
                 "Connecting to leader node {:?} of stream {}",
                 metadata.leader,
@@ -100,9 +107,10 @@ impl Environment {
                 // Producer must connect to leader node
                 let options: ClientOptions = self.options.client_options.clone();
                 loop {
-                    let temp_client = Client::connect(options.clone()).await?;
-                    let mapping = temp_client.connection_properties().await;
-                    if let Some(advertised_host) = mapping.get("advertised_host") {
+                    let temp_client = Connection::connect(options.clone()).await?;
+                    if let Some(advertised_host) =
+                        temp_client.connection_properties().get("advertised_host")
+                    {
                         if *advertised_host == metadata.leader.host.clone() {
                             client.close().await?;
                             client = temp_client;
@@ -113,12 +121,12 @@ impl Environment {
                 }
             } else {
                 client.close().await?;
-                client = Client::connect(ClientOptions {
+                client = Connection::connect(ClientOptions {
                     host: metadata.leader.host.clone(),
                     port: metadata.leader.port as u16,
                     ..opt_with_client_provided_name.clone()
                 })
-                .await?
+                .await?;
             };
         } else {
             return Err(ProducerCreateError::StreamDoesNotExist {
@@ -199,6 +207,7 @@ impl Environment {
             data: PhantomData,
             filter_value_extractor: None,
             client_provided_name: String::from("rust-stream-producer"),
+            close_callback: None,
         }
     }
 

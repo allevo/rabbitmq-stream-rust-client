@@ -184,6 +184,7 @@ async fn consumer_test_offset_specification_offset() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn consumer_close_test() {
+    let _ = tracing_subscriber::fmt::try_init();
     let env = TestEnvironment::create().await;
 
     let producer = env.env.producer().build(&env.stream).await.unwrap();

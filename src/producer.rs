@@ -9,17 +9,25 @@ use std::{
 
 use dashmap::DashMap;
 use futures::{future::BoxFuture, FutureExt};
+use rabbitmq_stream_protocol::commands::declare_publisher::DeclarePublisherCommand;
+use rabbitmq_stream_protocol::commands::delete_publisher::DeletePublisherCommand;
+use rabbitmq_stream_protocol::commands::generic::GenericResponse;
+use rabbitmq_stream_protocol::commands::publish::PublishCommand;
+use rabbitmq_stream_protocol::commands::query_publisher_sequence::{
+    QueryPublisherRequest, QueryPublisherResponse,
+};
+use rabbitmq_stream_protocol::types::PublishedMessage;
 use tokio::sync::mpsc::channel;
 use tokio::sync::{mpsc, Mutex};
-use tracing::{debug, error, trace};
+use tracing::{debug, enabled, error, trace, Level};
 
 use rabbitmq_stream_protocol::{message::Message, ResponseCode, ResponseKind};
 
-use crate::client::ClientMessage;
+use crate::client::{ClientMessage, CloseCallback, Connection};
 use crate::MetricsCollector;
 use crate::{client::MessageHandler, RabbitMQStreamResult};
 use crate::{
-    client::{Client, MessageResult},
+    client::MessageResult,
     environment::Environment,
     error::{ClientError, ProducerCloseError, ProducerCreateError, ProducerPublishError},
 };
@@ -58,7 +66,7 @@ impl ConfirmationStatus {
 }
 
 pub struct ProducerInternal {
-    client: Client,
+    client: Arc<Connection>,
     stream: String,
     producer_id: u8,
     batch_size: usize,
@@ -68,6 +76,7 @@ pub struct ProducerInternal {
     accumulator: MessageAccumulator,
     publish_version: u16,
     filter_value_extractor: Option<FilterValueExtractor>,
+    metrics_collector: Arc<dyn MetricsCollector>,
 }
 
 /// API for publising messages to RabbitMQ stream
@@ -82,6 +91,7 @@ pub struct ProducerBuilder<T> {
     pub(crate) data: PhantomData<T>,
     pub filter_value_extractor: Option<FilterValueExtractor>,
     pub(crate) client_provided_name: String,
+    pub(crate) close_callback: Option<Box<dyn CloseCallback>>,
 }
 
 #[derive(Clone)]
@@ -116,18 +126,37 @@ impl<T> ProducerBuilder<T> {
 
         let confirm_handler = ProducerConfirmHandler {
             waiting_confirmations: waiting_confirmations.clone(),
-            metrics_collector,
+            metrics_collector: metrics_collector.clone(),
         };
 
-        client.set_handler(confirm_handler).await;
+        client
+            .set_handle_response_message(Arc::new(confirm_handler))
+            .await;
+        if let Some(callback) = self.close_callback {
+            client.set_close_callback(callback).await;
+        }
 
         let producer_id = 1;
-        let response = client
-            .declare_publisher(producer_id, self.name.clone(), stream)
+        let name = self.name.clone();
+        let response: GenericResponse = client
+            .send_and_receive(|correlation_id| {
+                DeclarePublisherCommand::new(correlation_id, producer_id, name, stream.to_owned())
+            })
             .await?;
+        if !response.is_ok() {
+            return Err(ProducerCreateError::Create {
+                stream: stream.to_owned(),
+                status: response.code().clone(),
+            });
+        }
 
         let publish_sequence = if let Some(name) = self.name {
-            let sequence = client.query_publisher_sequence(&name, stream).await?;
+            let sequence: QueryPublisherResponse = client
+                .send_and_receive(|correlation_id| {
+                    QueryPublisherRequest::new(correlation_id, name, stream.to_string())
+                })
+                .await?;
+            let sequence = sequence.from_response();
 
             let first_sequence = if sequence == 0 { 0 } else { sequence + 1 };
 
@@ -136,31 +165,31 @@ impl<T> ProducerBuilder<T> {
             Arc::new(AtomicU64::new(0))
         };
 
-        if response.is_ok() {
-            let producer = ProducerInternal {
-                producer_id,
-                batch_size: self.batch_size,
-                stream: stream.to_string(),
-                client,
-                publish_sequence,
-                waiting_confirmations,
-                publish_version,
-                closed: Arc::new(AtomicBool::new(false)),
-                accumulator: MessageAccumulator::new(self.batch_size),
-                filter_value_extractor: self.filter_value_extractor,
-            };
-
-            let internal_producer = Arc::new(producer);
-            let producer = Producer(internal_producer.clone(), PhantomData);
-            schedule_batch_send(internal_producer);
-
-            Ok(producer)
-        } else {
-            Err(ProducerCreateError::Create {
+        if !response.is_ok() {
+            return Err(ProducerCreateError::Create {
                 stream: stream.to_owned(),
                 status: response.code().clone(),
-            })
+            });
         }
+        let producer = ProducerInternal {
+            producer_id,
+            batch_size: self.batch_size,
+            stream: stream.to_string(),
+            client,
+            publish_sequence,
+            waiting_confirmations,
+            publish_version,
+            closed: Arc::new(AtomicBool::new(false)),
+            accumulator: MessageAccumulator::new(self.batch_size),
+            filter_value_extractor: self.filter_value_extractor,
+            metrics_collector,
+        };
+
+        let internal_producer = Arc::new(producer);
+        let producer = Producer(internal_producer.clone(), PhantomData);
+        schedule_batch_send(internal_producer);
+
+        Ok(producer)
     }
 
     pub fn batch_size(mut self, batch_size: usize) -> Self {
@@ -182,6 +211,7 @@ impl<T> ProducerBuilder<T> {
             data: PhantomData,
             filter_value_extractor: None,
             client_provided_name: String::from("rust-stream-producer"),
+            close_callback: None,
         }
     }
 
@@ -258,12 +288,39 @@ fn schedule_batch_send(producer: Arc<ProducerInternal>) {
             if count > 0 {
                 debug!("Sending batch of {} messages", count);
                 let messages: Vec<_> = buffer.drain(..count).collect();
+
+                let messages: Vec<_> = messages
+                    .into_iter()
+                    .map(|message| {
+                        println!("publishing_id: {:?}", message.publishing_id);
+                        let publishing_id: u64 = message.publishing_id;
+                        let filter_value = message.filter_value;
+                        PublishedMessage::new(publishing_id, message.message, filter_value)
+                    })
+                    .collect();
+
+                if enabled!(Level::TRACE) {
+                    let sequences: Vec<_> = messages
+                        .iter()
+                        .map(rabbitmq_stream_protocol::types::PublishedMessage::publishing_id)
+                        .collect();
+                    trace!("Sending batch of messages {:?}", sequences);
+                }
+                let len = messages.len();
+
+                // TODO batch publish with max frame size check
                 match producer
                     .client
-                    .publish(producer.producer_id, messages, producer.publish_version)
+                    .send(PublishCommand::new(
+                        producer.producer_id,
+                        messages,
+                        producer.publish_version,
+                    ))
                     .await
                 {
-                    Ok(_) => {}
+                    Ok(_) => {
+                        producer.metrics_collector.publish(len as u64).await;
+                    }
                     Err(e) => {
                         error!("Error publishing batch {:?}", e);
 
@@ -272,7 +329,7 @@ fn schedule_batch_send(producer: Arc<ProducerInternal>) {
                             break;
                         }
                     }
-                };
+                }
             }
         }
     });
@@ -433,9 +490,13 @@ impl<T> Producer<T> {
             return Err(ProducerPublishError::Closed);
         }
         let publishing_id = match message.publishing_id() {
-            Some(publishing_id) => *publishing_id,
+            Some(publishing_id) => {
+                println!("Already set");
+                *publishing_id
+            },
             None => self.0.publish_sequence.fetch_add(1, Ordering::Relaxed),
         };
+        println!("publishing_id: {:?}", publishing_id);
         let mut msg = ClientMessage::new(publishing_id, message.clone(), None);
 
         if let Some(f) = self.0.filter_value_extractor.as_ref() {
@@ -446,6 +507,9 @@ impl<T> Producer<T> {
         self.0
             .waiting_confirmations
             .insert(publishing_id, ProducerMessageWaiter::Once(waiter));
+
+        println!("foo {:?}", self.0
+        .waiting_confirmations.iter().map(|x| x.key().clone()).collect::<Vec<_>>());
 
         self.0.accumulator.add(msg).await?;
 
@@ -492,6 +556,7 @@ impl<T> Producer<T> {
     pub fn is_closed(&self) -> bool {
         self.0.closed.load(Ordering::Relaxed)
     }
+
     // TODO handle producer state after close
     pub async fn close(self) -> Result<(), ProducerCloseError> {
         match self
@@ -500,19 +565,22 @@ impl<T> Producer<T> {
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         {
             Ok(false) => {
-                let response = self.0.client.delete_publisher(self.0.producer_id).await?;
-                if response.is_ok() {
-                    self.0.client.close().await?;
-                    Ok(())
-                } else {
-                    Err(ProducerCloseError::Close {
+                let response: GenericResponse = self.0.client.send_and_receive(|correlation_id| {
+                    DeletePublisherCommand::new(correlation_id, self.0.producer_id)
+                })
+                .await?;
+                if !response.is_ok() {
+                    return Err(ProducerCloseError::Close {
                         status: response.code().clone(),
                         stream: self.0.stream.clone(),
-                    })
+                    });
                 }
             }
-            _ => Err(ProducerCloseError::AlreadyClosed),
-        }
+            _ => return Err(ProducerCloseError::AlreadyClosed),
+        };
+        self.0.client.close().await?;
+
+        Ok(())
     }
 }
 
@@ -532,6 +600,8 @@ impl MessageHandler for ProducerConfirmHandler {
                         let confirm_len = confirm.publishing_ids.len();
                         for publishing_id in &confirm.publishing_ids {
                             let id = *publishing_id;
+
+                            println!("waiting_confirmations: {:?}", self.waiting_confirmations.iter().map(|x| x.key().clone()).collect::<Vec<_>>());
 
                             let waiter = match self.waiting_confirmations.remove(publishing_id) {
                                 Some((_, confirm_sender)) => confirm_sender,

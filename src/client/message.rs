@@ -22,9 +22,9 @@ impl BaseMessage for Message {
 
 #[derive(Debug)]
 pub struct ClientMessage {
-    publishing_id: u64,
-    message: Message,
-    filter_value: Option<String>,
+    pub(crate) publishing_id: u64,
+    pub(crate) message: Message,
+    pub(crate) filter_value: Option<String>,
 }
 
 impl ClientMessage {
