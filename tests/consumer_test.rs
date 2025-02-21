@@ -676,7 +676,8 @@ async fn consumer_test_with_filtering_match_unfiltered() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn super_stream_single_active_consumer_test() {
+async fn super_stream_single_active_consumer_test_no_callback() {
+    let _ = tracing_subscriber::fmt::try_init();
     let env = TestEnvironment::create_super_stream().await;
 
     let message_count = 1000;

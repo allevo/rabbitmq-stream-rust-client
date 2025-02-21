@@ -22,7 +22,7 @@ use tokio::io::AsyncWrite;
 use tokio::io::ReadBuf;
 use tokio::sync::RwLock;
 use tokio::{net::TcpStream, sync::Notify};
-use tokio_rustls::client::TlsStream;
+use tokio_rustls::client::{self, TlsStream};
 
 use tokio_util::codec::Framed;
 use tracing::trace;
@@ -133,28 +133,14 @@ impl AsyncWrite for GenericTcpStream {
     }
 }
 
-type SinkConnection = SplitSink<Framed<GenericTcpStream, RabbitMqStreamCodec>, Request>;
-type StreamConnection = SplitStream<Framed<GenericTcpStream, RabbitMqStreamCodec>>;
-
-pub struct ClientState {
-    server_properties: HashMap<String, String>,
-    connection_properties: HashMap<String, String>,
-    heartbeat: u32,
-    max_frame_size: u32,
-    last_heatbeat: Instant,
-    heartbeat_task: Option<task::TaskHandle>,
-}
-
 #[async_trait::async_trait]
 impl MessageHandler for Client {
     async fn handle_message(&self, item: MessageResult) -> RabbitMQStreamResult<()> {
         match &item {
-            Some(Ok(response)) => match response.kind_ref() {
-                _ => {
-                    if let Some(handler) = self.handler.read().await.as_ref() {
-                        let handler = handler.clone();
-                        tokio::task::spawn(async move { handler.handle_message(item).await });
-                    }
+            Some(Ok(_)) => {
+                if let Some(handler) = self.handler.read().await.as_ref() {
+                    let handler = handler.clone();
+                    tokio::task::spawn(async move { handler.handle_message(item).await });
                 }
             },
             Some(Err(err)) => {
@@ -186,6 +172,7 @@ pub struct Client {
     opts: ClientOptions,
     connection: Arc<Connection>,
     handler: Arc<RwLock<Option<Arc<dyn MessageHandler>>>>,
+    publish_sequence: Arc<AtomicU64>,
 }
 
 impl Client {
@@ -195,11 +182,13 @@ impl Client {
 
         let client = Client {
             opts,
-            connection,
+            connection: connection.clone(),
             handler: Arc::new(RwLock::new(None)),
+            publish_sequence: Arc::new(AtomicU64::new(0)),
         };
 
-        client.set_handler(client.clone()).await;
+        connection.set_handle_response_message(Arc::new(client.clone())).await;
+        // client.set_handler(client.clone()).await;
 
         Ok(client)
     }
@@ -439,24 +428,6 @@ impl Client {
 
     pub fn filtering_supported(&self) -> bool {
         self.connection.filtering_supported()
-    }
-
-    async fn create_connection(
-        broker: &ClientOptions,
-    ) -> Result<
-        (
-            ChannelSender<SinkConnection>,
-            ChannelReceiver<StreamConnection>,
-        ),
-        ClientError,
-    > {
-        let stream = broker.build_generic_tcp_stream().await?;
-        let stream = Framed::new(stream, RabbitMqStreamCodec {});
-
-        let (sink, stream) = stream.split();
-        let (tx, rx) = channel(sink, stream);
-
-        Ok((tx, rx))
     }
 
     pub async fn consumer_update(

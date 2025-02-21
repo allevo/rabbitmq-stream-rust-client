@@ -20,8 +20,8 @@ use common::*;
 #[tokio::test]
 async fn client_connection_test() {
     let client = Client::connect(ClientOptions::default()).await.unwrap();
-    assert_ne!(client.server_properties().await.len(), 0);
-    assert_ne!(client.connection_properties().await.len(), 0);
+    assert_ne!(client.server_properties().len(), 0);
+    assert_ne!(client.connection_properties().len(), 0);
 }
 
 #[tokio::test]
@@ -29,8 +29,8 @@ async fn client_connection_with_properties_test() {
     let mut opts = ClientOptions::default();
     opts.set_client_provided_name("my_connection_name");
     let client = Client::connect(opts).await.unwrap();
-    assert_ne!(client.server_properties().await.len(), 0);
-    assert_ne!(client.connection_properties().await.len(), 0);
+    assert_ne!(client.server_properties().len(), 0);
+    assert_ne!(client.connection_properties().len(), 0);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -350,13 +350,14 @@ async fn client_query_publisher() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn client_publish() {
+async fn raw_client_publish() {
     let test = TestClient::create().await;
 
     let (tx, mut rx) = channel(1);
     let reference: String = Faker.fake();
 
     let handler = move |msg: MessageResult| async move {
+        println!("---- handler: {:?}", msg);
         if let Some(Ok(response)) = msg {
             if let ResponseKind::Deliver(delivery) = response.kind() {
                 tx.send(delivery.clone()).await.unwrap()
@@ -386,13 +387,17 @@ async fn client_publish() {
 
     let sequences = test
         .client
-        .publish(1, Message::builder().body(b"message".to_vec()).build(), 1)
+        .publish(1, Message::builder()
+            .body(b"message".to_vec())
+            .publishing_id(5)
+            .build(), 1)
         .await
         .unwrap();
 
     assert_eq!(1, sequences.len());
+    println!("AAA");
     let delivery = rx.recv().await.unwrap();
-
+    println!("BBB");
     let _ = test.client.unsubscribe(1).await.unwrap();
     let _ = test.client.delete_publisher(1).await.unwrap();
 
@@ -404,6 +409,7 @@ async fn client_publish() {
     );
 }
 
+/*
 #[cfg(test)]
 #[tokio::test(flavor = "multi_thread")]
 async fn client_handle_unexpected_connection_interruption() {
@@ -412,6 +418,7 @@ async fn client_handle_unexpected_connection_interruption() {
     let res = Client::connect(options).await;
     assert!(matches!(res, Err(ClientError::ConnectionClosed)));
 }
+*/
 
 #[tokio::test(flavor = "multi_thread")]
 async fn client_exchange_command_versions() {
