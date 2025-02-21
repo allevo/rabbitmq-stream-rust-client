@@ -8,6 +8,7 @@ use tokio::sync::Notify;
 use tracing::info;
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let subscriber = FmtSubscriber::builder()

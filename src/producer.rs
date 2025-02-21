@@ -605,7 +605,10 @@ impl MessageHandler for ProducerConfirmHandler {
 
                             let waiter = match self.waiting_confirmations.remove(publishing_id) {
                                 Some((_, confirm_sender)) => confirm_sender,
-                                None => todo!(),
+                                None => {
+                                    debug!("Unknown publishing_id {:?}. Ignored.", id);
+                                    return Ok(())
+                                },
                             };
                             match waiter {
                                 ProducerMessageWaiter::Once(waiter) => {

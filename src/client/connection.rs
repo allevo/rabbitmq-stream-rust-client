@@ -203,6 +203,10 @@ impl Connection {
         &self.connection_properties
     }
 
+    pub fn server_properties(&self) -> &HashMap<String, String> {
+        &self.server_properties
+    }
+
     pub fn filtering_supported(&self) -> bool {
         self.filtering_supported
     }
