@@ -1,13 +1,16 @@
 use futures::StreamExt;
+use rabbitmq_stream_client::environment2::Environment2;
 use rabbitmq_stream_client::error::StreamCreateError;
+use rabbitmq_stream_client::superstream_consumer2::SuperStreamConsumer2;
 use rabbitmq_stream_client::types::{
     ByteCapacity, OffsetSpecification, ResponseCode, SuperStreamConsumer,
 };
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    use rabbitmq_stream_client::Environment;
-    let environment = Environment::builder()
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let environment = Environment2::builder()
         .load_balancer_mode(true)
         .host("34.147.193.13")
         .username("test")
@@ -15,11 +18,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build().await?;
     let super_stream = "tommaso-pippo";
 
-    /*
     let create_response = environment
         .stream_creator()
         .max_length(ByteCapacity::GB(5))
-        .create_super_stream(super_stream, 3, None)
+        .create_super_stream(super_stream, 1, None)
         .await;
 
     if let Err(e) = create_response {
@@ -33,17 +35,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
-    */
     println!(
         "Super stream consumer example, consuming messages from the super stream {}",
         super_stream
     );
-    let mut super_stream_consumer: SuperStreamConsumer = environment
+    let mut super_stream_consumer: SuperStreamConsumer2 = environment
         .super_stream_consumer()
         .offset(OffsetSpecification::First)
         .enable_single_active_consumer(true)
-        .client_provided_name("my super stream consumer for hello rust")
-        .name("consumer_name")
+        .client_provided_name("bar")
+        .name("foo")
         .consumer_update(|p, a| async move {
             OffsetSpecification::First
         })

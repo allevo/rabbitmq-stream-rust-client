@@ -75,15 +75,24 @@
 
 mod byte_capacity;
 mod client;
+pub mod client2;
 mod consumer;
+// mod consumer2;
+pub mod consumer3;
 mod environment;
+pub mod environment2;
 pub mod error;
 mod offset_specification;
 mod producer;
+pub mod producer2;
 mod stream_creator;
+pub mod stream_creator2;
 mod superstream;
+pub mod superstream2;
 mod superstream_consumer;
+pub mod superstream_consumer2;
 mod superstream_producer;
+pub mod superstream_producer2;
 
 pub type RabbitMQStreamResult<T> = Result<T, error::ClientError>;
 

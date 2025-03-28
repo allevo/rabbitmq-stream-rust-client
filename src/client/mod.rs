@@ -78,8 +78,8 @@ mod channel;
 mod codec;
 mod dispatcher;
 mod handler;
-mod message;
-mod metadata;
+pub mod message;
+pub mod metadata;
 mod metrics;
 mod options;
 mod task;
@@ -729,7 +729,7 @@ impl Client {
                 }
                 tokio::time::sleep(Duration::from_secs(heartbeat_interval.into())).await;
             }
-            warn!("Heartbeat task stopped. Force closing connection");
+            // warn!("Heartbeat task stopped. Force closing connection");
         })
         .into();
         state.heartbeat_task = Some(heartbeat_task);

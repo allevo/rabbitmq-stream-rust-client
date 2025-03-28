@@ -1,6 +1,8 @@
+use rabbitmq_stream_client::environment2::Environment2;
 use rabbitmq_stream_client::error::StreamCreateError;
+use rabbitmq_stream_client::superstream2::{HashRoutingMurmurStrategy, RoutingStrategy};
 use rabbitmq_stream_client::types::{
-    ByteCapacity, HashRoutingMurmurStrategy, Message, ResponseCode, RoutingStrategy,
+    ByteCapacity, Message, ResponseCode,
 };
 use std::convert::TryInto;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -20,38 +22,23 @@ fn hash_strategy_value_extractor(message: &Message) -> String {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    use rabbitmq_stream_client::Environment;
-    let environment = Environment::builder().build().await?;
+    let environment = Environment2::builder()
+        .load_balancer_mode(true)
+        .host("34.147.193.13")
+        .username("test")
+        .password("test")
+        .build().await?;
     let message_count = 3;
-    let super_stream = "tommaso";
+    let super_stream = "tommaso-pippo";
     let confirmed_messages = Arc::new(AtomicU32::new(0));
     let notify_on_send = Arc::new(Notify::new());
-    let _ = environment
-        .stream_creator()
-        .max_length(ByteCapacity::GB(5))
-        .create_super_stream(super_stream, 3, None)
-        .await;
 
-    let delete_stream = environment.delete_super_stream(super_stream).await;
-
-    match delete_stream {
-        Ok(_) => {
-            println!("Successfully deleted super stream {}", super_stream);
-        }
-        Err(err) => {
-            println!(
-                "Failed to delete super stream {}. error {}",
-                super_stream, err
-            );
-        }
-    }
-
+    /*
     let create_response = environment
         .stream_creator()
         .max_length(ByteCapacity::GB(5))
-        .create_super_stream(super_stream, 3, None)
+        .create_super_stream(super_stream, 1, None)
         .await;
-
     if let Err(e) = create_response {
         if let StreamCreateError::Create { stream, status } = e {
             match status {
@@ -63,6 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
+    */
     println!(
         "Super stream example. Sending {} messages to the super stream: {}",
         message_count, super_stream
